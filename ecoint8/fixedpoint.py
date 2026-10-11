@@ -37,6 +37,18 @@ def quantize_multiplier(r: float) -> tuple[int, int]:
     return mult, 31 - shift  # apply as: y = (x * mult) >> total_shift
 
 
+def _sr_nudge(shape: torch.Size, denom: int, device: torch.device) -> torch.Tensor:
+    """Stochastic-rounding uniform draw ``U[0, denom)`` in the narrowest dtype.
+
+    Values below 2**31 fit int32 (halves the transient vs int64); larger
+    denominators (tiny ratios -> huge shifts) keep int64. The DRAWN VALUES
+    are identical either way, so downstream integer math is bit-identical —
+    only the buffer width changes.
+    """
+    dtype = torch.int32 if denom <= (1 << 31) else torch.int64
+    return torch.randint(0, denom, shape, dtype=dtype, device=device)
+
+
 def apply_mult_shift(
     x: torch.Tensor, mult: int | torch.Tensor, shift: int, stochastic: bool = False
 ) -> torch.Tensor:
@@ -56,8 +68,7 @@ def apply_mult_shift(
     if shift >= 0:
         denom = 1 << shift
         if stochastic:
-            nudge = torch.randint(0, denom, prod.shape, dtype=torch.int64, device=prod.device)
-            prod = prod + nudge
+            prod = prod + _sr_nudge(prod.shape, denom, prod.device)
         else:
             prod = prod + (denom >> 1)  # round-half-up via floor
         return torch.div(prod, denom, rounding_mode="floor")
