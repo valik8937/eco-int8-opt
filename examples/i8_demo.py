@@ -13,8 +13,7 @@ import math
 import torch
 import torch.nn as nn
 
-from ecoint8 import I8Linear, I8ReLU, I8Sequential
-from ecoint8.iopt import I8ECO
+from ecoint8.strict import I8Linear, I8ReLU, I8Sequential, I8ECO
 from ecoint8.fixedpoint import _check_int
 from ecoint8.quant import quantize_tensor_dynamic, quantize_symmetric
 

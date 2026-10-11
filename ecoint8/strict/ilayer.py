@@ -24,7 +24,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from .fixedpoint import (
+from ..fixedpoint import (
     _check_int,
     apply_mult_shift,
     dynamic_scale_from_int,

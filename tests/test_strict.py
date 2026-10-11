@@ -10,11 +10,11 @@ import pathlib
 import torch
 import torch.nn as nn
 
-from ecoint8 import I8Linear, I8ReLU, I8Sequential
-from ecoint8.iopt import I8ECO
+from ecoint8.strict import I8Linear, I8ReLU, I8Sequential
+from ecoint8.strict import I8ECO
 from ecoint8.quant import quantize_symmetric, quantize_tensor_dynamic
 
-STRICT = ["fixedpoint.py", "ilayer.py", "iopt.py"]
+STRICT = ["fixedpoint.py", "strict/ilayer.py", "strict/iopt.py"]
 BANNED = [".float(", "torch.float32", "torch.float(", "to(torch.float", ".double("]
 INT_DTYPES = {torch.int8, torch.int32, torch.int64}
 

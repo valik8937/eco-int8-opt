@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import torch
 
-from .fixedpoint import (
+from ..fixedpoint import (
     _check_int,
     apply_mult_shift,
     int_amax,
