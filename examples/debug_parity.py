@@ -80,3 +80,29 @@ if gapAC > 3 * max(gapAB, 1e-6):
     print("VERDICT: H1 (systematic triton bug) — backend gap dwarfs noise gap.")
 else:
     print("VERDICT: H0 (SR-noise chaos) — different noise alone diverges as much.")
+
+# ---- mode D: the user's exact interleaved loop (shared seed-0 init stream) ----
+print("\n--- mode D: interleaved torch-vs-triton, shared init (user's exact loop) ---")
+torch.manual_seed(0)
+netT = to_int8(nn.Sequential(nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, 10))).cuda()
+optT = EcoInt8SGDM([m for m in netT.modules() if isinstance(m, Int8Linear)],
+                   lr=0.03, momentum=0.9, backend="torch")
+netR = to_int8(nn.Sequential(nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, 10))).cuda()
+optR = EcoInt8SGDM([m for m in netR.modules() if isinstance(m, Int8Linear)],
+                   lr=0.03, momentum=0.9, backend="auto")
+hT, hR = [], []
+for _ in range(STEPS):
+    optT.zero_grad()
+    lT = nn.functional.cross_entropy(netT(X), y)
+    lT.backward()
+    optT.step()
+    hT.append(lT.item())
+    optR.zero_grad()
+    lR = nn.functional.cross_entropy(netR(X), y)
+    lR.backward()
+    optR.step()
+    hR.append(lR.item())
+print(f"{'step':>4} | {'D-torch':>11} | {'D-triton':>11} | {'gap':>10}")
+for t in range(STEPS):
+    print(f"{t+1:>4} | {hT[t]:>11.4f} | {hR[t]:>11.4f} | {abs(hT[t]-hR[t]):>10.4f}")
+print(f"mode-D final gap: {abs(hT[-1]-hR[-1]):.4f} (step-1 equal: {abs(hT[0]-hR[0]) < 1e-6})")
