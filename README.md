@@ -55,10 +55,17 @@ zero tensor allocations.
 
 ## API
 
+All symbols below are importable from the top level
+(`from ecoint8 import I8ECO, I8Sequential, ...`); the strict
+integer-only subpackage also lives at `ecoint8.strict`.
+
 | Symbol | What |
 |---|---|
-| `I8ECO` | Integer-only ECO-SGDM (the optimizer) |
-| `I8Linear` / `I8ReLU` / `I8Sequential` | Integer-only layers + manual pipeline |
+| `I8ECO` | Integer-only ECO-SGDM (the optimizer, strict path) |
+| `I8Linear` / `I8ReLU` / `I8Sequential` | Integer-only layers + manual pipeline (strict path) |
+| `EcoInt8SGDM` | Fully-int8 ECO-SGDM with autograd layers (torch/triton backends) |
+| `EcoSGDM` / `EcoAdam` | ECO with fp32 optimizer state, no master weights |
+| `Int8Linear` / `to_int8` | int8 matmul layers with fp32 boundary (autograd) |
 | `ecoint8.fixedpoint` | `quantize_multiplier`, `apply_mult_shift`, `pad_mm_dims`, ... |
 | `ecoint8.quant` | Boundary helpers (entry/exit quantization only) |
 

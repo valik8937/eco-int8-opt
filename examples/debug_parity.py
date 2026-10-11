@@ -12,12 +12,9 @@ Verdict:
 
 Usage (CUDA box):  python3 examples/debug_parity.py
 """
-import sys
-
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, ".")
 from ecoint8 import EcoInt8SGDM, Int8Linear, to_int8
 
 STEPS = 12

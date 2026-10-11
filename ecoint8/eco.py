@@ -98,6 +98,11 @@ class EcoSGDM:
             g = _get_grad_w(layer)
             if g is None:
                 continue
+            dev = layer.w_i8.device
+            if self.m[i].device != dev:  # layer moved after opt creation: follow it
+                self.m[i] = self.m[i].to(dev)
+            if self.s_fixed[i].device != dev:
+                self.s_fixed[i] = self.s_fixed[i].to(dev)
             if self.grad_clip is not None:
                 n = g.norm().item()
                 if n > self.grad_clip:
@@ -186,6 +191,13 @@ class EcoAdam:
             g = _get_grad_w(layer)
             if g is None:
                 continue
+            dev = layer.w_i8.device
+            if self.m[i].device != dev:  # layer moved after opt creation: follow it
+                self.m[i] = self.m[i].to(dev)
+            if self.v[i].device != dev:
+                self.v[i] = self.v[i].to(dev)
+            if self.s_fixed[i].device != dev:
+                self.s_fixed[i] = self.s_fixed[i].to(dev)
             if self.grad_clip is not None:
                 n = g.norm().item()
                 if n > self.grad_clip:
@@ -373,6 +385,11 @@ class EcoInt8SGDM:
                 if self._step_triton(i, layer, g):
                     self.stats["fused_steps"] += 1
                 continue
+            dev = layer.w_i8.device
+            if self.m_i8[i].device != dev:  # layer moved after opt creation: follow it
+                self.m_i8[i] = self.m_i8[i].to(dev)
+            if self.s_fixed[i].device != dev:
+                self.s_fixed[i] = self.s_fixed[i].to(dev)
             if self.grad_clip is not None:
                 n = g.norm().item()
                 if n > self.grad_clip:

@@ -4,13 +4,10 @@ Usage (CUDA box):  python3 examples/profile_triton.py
 Needs nothing beyond torch (uses built-in Kineto profiler).
 Paste the printed table back.
 """
-import sys
-
 import torch
 import torch.nn as nn
 from torch.profiler import ProfilerActivity, profile
 
-sys.path.insert(0, ".")
 from ecoint8 import EcoInt8SGDM, Int8Linear, to_int8
 
 

@@ -116,7 +116,7 @@ class I8ECO:
                 m_t = (mU * b_q + gU * nb_q) >> 16  # int64, beta in 16-bit fp
                 thU = (w_i8[o].to(torch.int64) << F) - ((m_t * lr_q) >> 16)
                 # stochastic rounding onto the frozen grid (grid step = 2**F in U)
-                nudge = torch.randint(0, 1 << F, thU.shape, dtype=torch.int64)
+                nudge = torch.randint(0, 1 << F, thU.shape, dtype=torch.int64, device=thU.device)
                 w_new = torch.div(thU + nudge, 1 << F, rounding_mode="floor")
                 w_new = torch.clamp(w_new, -127, 127)
                 eU = thU - (w_new << F)

@@ -9,13 +9,11 @@ take tens of seconds) + a hard synchronize, so timed steps never include
 compile time. On a CPU-only box it times the torch fallback and skips Triton.
 """
 import argparse
-import sys
 import time
 
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, ".")
 from ecoint8 import EcoInt8SGDM, Int8Linear
 from ecoint8.triton_kernels import TRITON_AVAILABLE
 

@@ -50,13 +50,13 @@ def apply_mult_shift(
     xi = x.to(torch.int64)
     if isinstance(mult, torch.Tensor):
         _check_int(mult, "mult")
-        prod = xi * mult.to(torch.int64)
+        prod = xi * mult.to(device=xi.device, dtype=torch.int64)
     else:
         prod = xi * mult if mult != 1 else xi
     if shift >= 0:
         denom = 1 << shift
         if stochastic:
-            nudge = torch.randint(0, denom, prod.shape, dtype=torch.int64)
+            nudge = torch.randint(0, denom, prod.shape, dtype=torch.int64, device=prod.device)
             prod = prod + nudge
         else:
             prod = prod + (denom >> 1)  # round-half-up via floor

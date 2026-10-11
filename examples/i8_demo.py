@@ -13,9 +13,9 @@ import math
 import torch
 import torch.nn as nn
 
-from ecoint8.strict import I8Linear, I8ReLU, I8Sequential, I8ECO
+from ecoint8 import I8Linear, I8ReLU, I8Sequential, I8ECO
 from ecoint8.fixedpoint import _check_int
-from ecoint8.quant import quantize_tensor_dynamic, quantize_symmetric
+from ecoint8.quant import quantize_tensor_dynamic
 
 torch.manual_seed(0)
 N, D, H = 2048, 20, 32
@@ -56,9 +56,7 @@ for ep in range(EPOCHS):
     logits_fp = (logits_i8.to(torch.float32) * s_out).requires_grad_()
     loss = loss_fn(logits_fp, y)
     (g_fp,) = torch.autograd.grad(loss, logits_fp)
-    g_i8 = quantize_symmetric(g_fp, float(g_fp.abs().max().item()) / 127.0,
-                              stochastic=True)
-    s_g = float(g_fp.abs().max().item()) / 127.0
+    g_i8, s_g = quantize_tensor_dynamic(g_fp, stochastic=True)
     audit("entry-grad", g_i8)
 
     with torch.no_grad():

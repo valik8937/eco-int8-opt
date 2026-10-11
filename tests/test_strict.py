@@ -59,7 +59,7 @@ def test_state_is_integral():
 def test_layer_matches_fp32():
     torch.manual_seed(1)
     lin = I8Linear(64, 64)
-    ref_w = lin.w_i8.to(torch.float32) * torch.tensor(lin.sw).unsqueeze(1)
+    ref_w = lin.w_i8.to(torch.float32) * torch.tensor(lin.sw, device=lin.w_i8.device).unsqueeze(1)
     x = torch.randn(32, 64)
     with torch.no_grad():
         x8, sx = quantize_tensor_dynamic(x, stochastic=False)

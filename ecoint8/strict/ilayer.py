@@ -65,7 +65,7 @@ def _common_shift_requant(
     _check_int(acc, "acc")
     ms = [quantize_multiplier(r) for r in ratios]
     com = min(s for _, s in ms)
-    mults = torch.tensor([m >> (s - com) for m, s in ms], dtype=torch.int32)
+    mults = torch.tensor([m >> (s - com) for m, s in ms], dtype=torch.int32, device=acc.device)
     y64 = apply_mult_shift(acc.to(torch.int64), mults, com, stochastic)
     return to_int8_sat(y64)
 
