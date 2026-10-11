@@ -76,10 +76,12 @@ for i in (0, 1):
         f"layer{i}: ||wA-wB||/||w||={rel(wa, wb):.4f}  ||wA-wC||/||w||={rel(wa, wc):.4f}  "
         f"s_m: cpuA={sma:.3e} cpuB={smb:.3e} tri={smc:.3e}"
     )
-if gapAC > 3 * max(gapAB, 1e-6):
+if max(gapAB, gapAC) < 0.01:
+    print("VERDICT: TRACKING OK — backend gap is at noise level, Triton is healthy.")
+elif gapAC > 3 * max(gapAB, 1e-6):
     print("VERDICT: H1 (systematic triton bug) — backend gap dwarfs noise gap.")
 else:
-    print("VERDICT: H0 (SR-noise chaos) — different noise alone diverges as much.")
+    print("VERDICT: H0 (noise-sensitive) — different SR noise alone diverges as much.")
 
 # ---- mode D: the user's exact interleaved loop (shared seed-0 init stream) ----
 print("\n--- mode D: interleaved torch-vs-triton, shared init (user's exact loop) ---")
