@@ -3,7 +3,8 @@
 After each step the updated weights are quantized and the quantization error
 is injected into the momentum buffer — an error-feedback loop with zero
 extra memory. Based on "ECO: Quantized Training without Full-Precision
-Master Weights" (Nikdan et al., Google Research, 2026).
+Master Weights" (Nikdan et al., Google Research, 2026,
+https://arxiv.org/abs/2601.22101).
 
 SGDM (paper Algorithm 2)::
 

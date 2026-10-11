@@ -88,6 +88,27 @@ Measured: strict-int8 0.969 acc vs 0.985 mixed ECO vs 0.992 fp32
 - State memory: 1408B vs 5904B for fp32 SGD with momentum (~4x less).
 - `examples/quad_toy.py` reproduces the paper's Section 3.4 (naive 1/η blow-up vs ECO floor).
 
+## Citation
+
+The error-feedback core of this package (`EcoSGDM`, `EcoAdam`, and the
+fixed-grid / stochastic-rounding discipline behind `EcoInt8SGDM` and `I8ECO`)
+implements the method from:
+
+> Mahdi Nikdan, Amir Zandieh, Dan Alistarh, Vahab Mirrokni.
+> **ECO: Quantized Training without Full-Precision Master Weights.**
+> Google Research, 2026. [arXiv:2601.22101](https://arxiv.org/abs/2601.22101)
+
+```bibtex
+@misc{nikdan2026eco,
+  title={ECO: Quantized Training without Full-Precision Master Weights},
+  author={Mahdi Nikdan and Amir Zandieh and Dan Alistarh and Vahab Mirrokni},
+  year={2026},
+  eprint={2601.22101},
+  archivePrefix={arXiv},
+  primaryClass={cs.CL}
+}
+```
+
 ## License
 
 MIT
