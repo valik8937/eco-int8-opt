@@ -1,4 +1,4 @@
-# eco-int8
+# eco-int8-opt
 
 Fully-int8 ECO optimizers for PyTorch: **int8 weights, int8 gradients, int8 momentum — zero master weights.**
 
@@ -10,7 +10,7 @@ an error-feedback loop with no extra memory. Here even the momentum lives in int
 ## Install
 
 ```bash
-pip install eco-int8
+pip install eco-int8-opt
 ```
 
 ## Quickstart

@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "eco-int8"
+name = "eco-int8-opt"
 version = "0.1.0"
 description = "Fully-int8 ECO optimizers: int8 weights, grads and momentum with zero master weights"
 readme = "README.md"
@@ -24,8 +24,8 @@ dependencies = ["torch>=2.0"]
 dev = ["pytest"]
 
 [project.urls]
-Homepage = "https://github.com/valik8937/eco-int8"
-Repository = "https://github.com/valik8937/eco-int8"
+Homepage = "https://github.com/valik8937/eco-int8-opt"
+Repository = "https://github.com/valik8937/eco-int8-opt"
 
 [tool.setuptools.packages.find]
 include = ["ecoint8*"]
