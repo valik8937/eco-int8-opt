@@ -1,27 +1,27 @@
-"""eco-int8: fully-int8 ECO optimizers without master weights."""
-from .quant import quantize_symmetric, quantize_tensor_dynamic, quantize_per_channel, dequantize
-from .layers import Int8Linear, to_int8
-from .optimizer import Int8SGD
-from .eco import EcoSGDM, EcoAdam, EcoInt8SGDM
-from .deploy import FbgemmInt8Linear, to_fbgemm
+"""eco-int8-opt: strict integer-only ECO training. No fp32 tensors, end to end."""
+from .fixedpoint import (
+    apply_mult_shift,
+    dynamic_scale_from_int,
+    int_amax,
+    pad_mm_dims,
+    quantize_multiplier,
+)
 from .ilayer import I8Linear, I8ReLU, I8Sequential
 from .iopt import I8ECO
+from .quant import quantize_symmetric, quantize_tensor_dynamic, quantize_per_channel, dequantize
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
-    "EcoInt8SGDM",
     "I8ECO",
-    "EcoSGDM",
-    "EcoAdam",
-    "Int8SGD",
-    "Int8Linear",
     "I8Linear",
     "I8ReLU",
     "I8Sequential",
-    "to_int8",
-    "FbgemmInt8Linear",
-    "to_fbgemm",
+    "apply_mult_shift",
+    "dynamic_scale_from_int",
+    "int_amax",
+    "pad_mm_dims",
+    "quantize_multiplier",
     "quantize_symmetric",
     "quantize_tensor_dynamic",
     "quantize_per_channel",

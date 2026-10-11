@@ -1,11 +1,13 @@
 # eco-int8-opt
 
-Fully-int8 ECO optimizers for PyTorch: **int8 weights, int8 gradients, int8 momentum — zero master weights.**
+Strict integer-only ECO training for PyTorch: **every tensor is int8/int32/int64 —
+no fp32 anywhere in the training path.**
 
 Implements the Error-Compensating Optimizer (ECO) idea from *"ECO: Quantized Training without
 Full-Precision Master Weights"* (Nikdan et al., Google Research, 2026): after each step the
 weights are quantized and the quantization error is injected into the momentum buffer, forming
-an error-feedback loop with no extra memory. Here even the momentum lives in int8.
+an error-feedback loop with no extra memory. Here the whole loop — weights, grads, momentum,
+matmuls — is integer-only.
 
 ## Install
 
@@ -17,54 +19,8 @@ pip install eco-int8-opt
 
 ```python
 import torch
-import torch.nn as nn
 import ecoint8
 
-# 1. swap nn.Linear -> int8 layers (weights stored as int8 + per-row scales)
-model = ecoint8.to_int8(model)
-
-# 2. optimize — same call pattern as torch SGD
-int8_layers = [m for m in model.modules() if isinstance(m, ecoint8.Int8Linear)]
-opt = ecoint8.EcoInt8SGDM(int8_layers, lr=0.5, momentum=0.9)
-
-for x, y in loader:
-    opt.zero_grad()
-    loss = loss_fn(model(x), y)
-    loss.backward()
-    opt.step()
-```
-
-Notes:
-
-- `Int8Linear` computes forward/backward matmuls in int8 (`torch._int_mm`) and stashes
-  weight grads for the optimizer — `loss.backward(); opt.step()` just works.
-- The weight quantization grid is **frozen** at optimizer construction (required by ECO theory).
-  Use stochastic rounding (default) — deterministic rounding breaks the guarantees.
-- Lr semantics follow the paper (`m = βm + (1−β)g`), so pass `lr / (1 − beta)` to match
-  torch SGD step sizes.
-- `opt.memory_bytes()` reports stored optimizer state in bytes (1B/weight + 1B/momentum).
-
-## API
-
-| Symbol | What |
-|---|---|
-| `EcoInt8SGDM` | Fully-int8 ECO (the main event) |
-| `I8ECO` + `I8Linear` / `I8Sequential` | **Strict** integer-only path: zero fp32 tensors (see below) |
-| `EcoSGDM` / `EcoAdam` | ECO with fp32 momentum states (paper-faithful) |
-| `Int8SGD` | All-int8 SGD without error feedback (naive baseline) |
-| `Int8Linear` / `to_int8` | int8 linear layer + model converter |
-| `to_fbgemm` | Export trained layers to prepacked FBGEMM for ~2x faster CPU inference |
-
-## Strict integer-only path (no fp32 tensors, end to end)
-
-`ecoint8.fixedpoint` / `ilayer` / `iopt` implement training where **every tensor**
-is int8/int32/int64: int8 matmuls (`torch._int_mm`) with int32 accumulators,
-integer requantization via `(mult, shift)` pairs (TFLite-style), stochastic
-rounding via `torch.randint`, lr/momentum/ECO-injection as fixed-point.
-Runtime dtype asserts guard every kernel boundary, and
-`tests/test_strict.py` scans the sources for float-tensor constructors.
-
-```python
 net = ecoint8.I8Sequential(ecoint8.I8Linear(D, H), ecoint8.I8ReLU(), ecoint8.I8Linear(H, 2))
 net.calibrate(x_i8, s_x)          # one pass freezes all grids (static quantization)
 opt = ecoint8.I8ECO(net.int8_layers(), lr=0.5, momentum=0.9)
@@ -75,38 +31,40 @@ net.backward_i8(g_i8, s_g)            # explicit reverse pass, integer only
 opt.step(); opt.zero_grad()
 ```
 
+How it works (`ecoint8.fixedpoint` / `ilayer` / `iopt`):
+
+- int8 matmuls (`torch._int_mm`) with int32 accumulators (CUDA dims padded to spec, bit-exact);
+- integer requantization via `(mult, shift)` pairs (TFLite-style), stochastic rounding
+  via `torch.randint`, lr/momentum/ECO-injection as fixed-point, weight updates in
+  int64 accumulators with fractional bits;
+- every kernel input/output is dtype-asserted integral — any fp32 leak explodes immediately;
+- `tests/test_strict.py` additionally scans the sources for float-tensor constructors.
+
 Two fp32 boundaries are unavoidable and documented: quantizing the input batch
-once, and the final loss (+its grad, immediately re-quantized). Scales are
-plain Python floats — scalar bookkeeping, zero tensor allocations.
-Measured: strict-int8 0.969 acc vs 0.985 mixed ECO vs 0.992 fp32
-(`examples/i8_demo.py`).
-
-## GPU: fused Triton step (optional)
-
-```bash
-pip install eco-int8-opt[gpu]
-python3 examples/benchmark_triton.py
-```
-
-On CUDA, `EcoInt8SGDM` runs the whole weight/momentum update as **2 fused
-Triton launches** (`ecoint8/triton_kernels.py`): grad quant, momentum, weight
-update, ECO injection and both stochastic roundings happen in registers via
-`tl.rand` — no full-size fp32 temporaries (`rand_like`, `clamp`, `floor`
-outputs are gone). Backend selection: `EcoInt8SGDM(..., backend="auto" |
-"torch" | "triton")`, used backend reported in `opt.last_step_backend`.
+once (`ecoint8.quant` helpers exist exactly for this), and the final loss (+its grad,
+immediately re-quantized). Scales are plain Python floats — scalar bookkeeping,
+zero tensor allocations.
 
 ## Measured
 
-- MLP, 150 epochs, cosine decay: fp32 0.992 acc / ECO-int8 0.985 / naive-int8 0.976
-  (naive degrades in the decayed-lr tail, ECO holds — see `examples/eco_demo.py`).
-- State memory: 1408B vs 5904B for fp32 SGD with momentum (~4x less).
-- `examples/quad_toy.py` reproduces the paper's Section 3.4 (naive 1/η blow-up vs ECO floor).
+- MLP, 150 epochs, cosine decay: strict-int8 **0.969** acc vs fp32 0.992
+  (`examples/i8_demo.py`).
+- State memory: 1 byte/weight + 1 byte/momentum.
+- `examples/quad_toy.py` reproduces the ECO paper's Section 3.4 (naive 1/η blow-up
+  vs ECO's finite noise floor).
+
+## API
+
+| Symbol | What |
+|---|---|
+| `I8ECO` | Integer-only ECO-SGDM (the optimizer) |
+| `I8Linear` / `I8ReLU` / `I8Sequential` | Integer-only layers + manual pipeline |
+| `ecoint8.fixedpoint` | `quantize_multiplier`, `apply_mult_shift`, `pad_mm_dims`, ... |
+| `ecoint8.quant` | Boundary helpers (entry/exit quantization only) |
 
 ## Citation
 
-The error-feedback core of this package (`EcoSGDM`, `EcoAdam`, and the
-fixed-grid / stochastic-rounding discipline behind `EcoInt8SGDM` and `I8ECO`)
-implements the method from:
+The error-feedback core of this package implements the method from:
 
 > Mahdi Nikdan, Amir Zandieh, Dan Alistarh, Vahab Mirrokni.
 > **ECO: Quantized Training without Full-Precision Master Weights.**
