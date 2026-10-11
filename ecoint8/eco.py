@@ -245,9 +245,12 @@ class EcoInt8SGDM:
     otherwise — and always on CPU — the same math runs as plain PyTorch.
     ``backend`` selects: ``"auto"`` (default), ``"torch"`` or ``"triton"``
     (raises if triton/CUDA is unavailable). The backend used is reported in
-    ``opt.last_step_backend``. Note: on the triton path ``self.s_m`` is left
-    stale by design (the fresh scale lives on-GPU), so don't mix backends
-    mid-training.
+    ``opt.last_step_backend``. Note: on the triton path the Python-side
+    ``self.s_m`` is left stale by design (the live scale is a persistent
+    0-dim GPU scalar, updated in-GPU every step with zero host syncs),
+    so don't mix backends mid-training. Also note ``grad_clip`` is
+    effectively a no-op in EcoInt8SGDM on EITHER backend: the clip
+    coefficient cancels exactly because amax is recomputed after clipping.
 
     Example:
         model = ecoint8.to_int8(model)          # swap nn.Linear -> Int8Linear
@@ -288,6 +291,7 @@ class EcoInt8SGDM:
         }
         self.last_step_backend = "torch"
         self._tri_scratch: dict[str, torch.Tensor] = {}  # persistent partial-max bufs
+        self._tri_sm: dict[int, torch.Tensor] = {}  # persistent GPU momentum scales
 
     def _triton_ready(self) -> bool:
         """True when every layer lives on CUDA and triton is importable."""
@@ -318,26 +322,30 @@ class EcoInt8SGDM:
 
         from .triton_kernels import triton_eco_step_
 
+        dev = layer.w_i8.device
         sw = self.s_fixed[i]
-        if sw.device != layer.w_i8.device:  # one-time move, then stays put
-            sw = sw.to(layer.w_i8.device)
+        if sw.device != dev:  # one-time move, then stays put
+            sw = sw.to(dev)
             self.s_fixed[i] = sw
         m = self.m_i8[i]
-        if m.device != layer.w_i8.device:
-            m = m.to(layer.w_i8.device)
+        if m.device != dev:
+            m = m.to(dev)
             self.m_i8[i] = m
+        sm_t = self._tri_sm.get(i)
+        if sm_t is None or sm_t.device != dev:  # persistent GPU scale, init 1.0
+            sm_t = torch.ones((), dtype=torch.float32, device=dev)
+            self._tri_sm[i] = sm_t
         res = triton_eco_step_(
             layer.w_i8,
             m,
             g.contiguous(),
             sw.reshape(-1).contiguous(),
-            float(self.s_m[i]),
+            sm_t,
             lr=float(self.lr),
             beta=float(self.beta),
             wd=float(self.wd),
-            grad_clip=self.grad_clip,
             seed=random.getrandbits(31),
-            scratch=self._tri_scratch_for(layer.w_i8.device),
+            scratch=self._tri_scratch_for(dev),
         )
         return res == "ok"
 
