@@ -240,6 +240,15 @@ class EcoInt8SGDM:
     State per parameter: 1 byte of weights + 1 byte of momentum
     (+ amortized per-row scales). Biases stay fp32 (tiny, not worth it).
 
+    On CUDA with ``pip install eco-int8-opt[gpu]`` the weight/momentum math
+    runs as a fused Triton kernel (2 launches, no full-size fp32 temporaries);
+    otherwise — and always on CPU — the same math runs as plain PyTorch.
+    ``backend`` selects: ``"auto"`` (default), ``"torch"`` or ``"triton"``
+    (raises if triton/CUDA is unavailable). The backend used is reported in
+    ``opt.last_step_backend``. Note: on the triton path ``self.s_m`` is left
+    stale by design (the fresh scale lives on-GPU), so don't mix backends
+    mid-training.
+
     Example:
         model = ecoint8.to_int8(model)          # swap nn.Linear -> Int8Linear
         opt = ecoint8.EcoInt8SGDM(model_int8_layers, lr=0.5, momentum=0.9)
@@ -255,13 +264,16 @@ class EcoInt8SGDM:
         weight_decay: float = 0.0,
         grad_clip: float | None = 1.0,
         bias_lr: float | None = None,
+        backend: str = "auto",
     ):
         assert momentum > 0, "ECO requires beta > 0"
+        assert backend in ("auto", "torch", "triton"), "backend: auto | torch | triton"
         self.layers = list(int8_layers)
         self.lr = lr
         self.beta = momentum
         self.wd = weight_decay
         self.grad_clip = grad_clip
+        self.backend = backend
         self.m_i8 = [torch.zeros_like(layer.w_i8) for layer in self.layers]
         self.s_m = [1.0 for _ in self.layers]
         self.s_fixed = [layer.s_w.clone() for layer in self.layers]  # frozen weight grid
@@ -270,7 +282,28 @@ class EcoInt8SGDM:
             torch.optim.SGD(bparams, lr=bias_lr or lr, momentum=momentum) if bparams else None
         )
         self.step_count = 0
-        self.stats = {"skipped": 0, "dead_grads": 0, "sat_ratio": 0.0, "mean_abs_e": 0.0}
+        self.stats = {
+            "skipped": 0, "dead_grads": 0, "sat_ratio": 0.0, "mean_abs_e": 0.0,
+            "fused_steps": 0,
+        }
+        self.last_step_backend = "torch"
+        self._tri_scratch: dict[str, torch.Tensor] = {}  # persistent partial-max bufs
+
+    def _triton_ready(self) -> bool:
+        """True when every layer lives on CUDA and triton is importable."""
+        from .triton_kernels import TRITON_AVAILABLE
+
+        return TRITON_AVAILABLE and all(layer.w_i8.is_cuda for layer in self.layers)
+
+    def _tri_scratch_for(self, device: torch.device) -> torch.Tensor:
+        from .triton_kernels import MAX_SCRATCH
+
+        key = str(device)
+        buf = self._tri_scratch.get(key)
+        if buf is None:
+            buf = torch.empty(MAX_SCRATCH, dtype=torch.float32, device=device)
+            self._tri_scratch[key] = buf
+        return buf
 
     def set_lr(self, lr: float):
         self.lr = lr
@@ -279,14 +312,58 @@ class EcoInt8SGDM:
                 pg["lr"] = lr
 
     @torch.no_grad()
+    def _step_triton(self, i: int, layer, g: torch.Tensor) -> bool:
+        """One fused Triton step for a single layer. Returns True if applied."""
+        import random
+
+        from .triton_kernels import triton_eco_step_
+
+        sw = self.s_fixed[i]
+        if sw.device != layer.w_i8.device:  # one-time move, then stays put
+            sw = sw.to(layer.w_i8.device)
+            self.s_fixed[i] = sw
+        m = self.m_i8[i]
+        if m.device != layer.w_i8.device:
+            m = m.to(layer.w_i8.device)
+            self.m_i8[i] = m
+        res = triton_eco_step_(
+            layer.w_i8,
+            m,
+            g.contiguous(),
+            sw.reshape(-1).contiguous(),
+            float(self.s_m[i]),
+            lr=float(self.lr),
+            beta=float(self.beta),
+            wd=float(self.wd),
+            grad_clip=self.grad_clip,
+            seed=random.getrandbits(31),
+            scratch=self._tri_scratch_for(layer.w_i8.device),
+        )
+        return res == "ok"
+
+    @torch.no_grad()
     def step(self):
         lr, b = self.lr, self.beta
         alpha = (1.0 / lr) * (1.0 - 1.0 / b)
         self.step_count += 1
+        if self.backend == "triton" and not self._triton_ready():
+            from .triton_kernels import TRITON_AVAILABLE
+
+            raise RuntimeError(
+                "backend='triton' requested but unavailable "
+                f"(TRITON_AVAILABLE={TRITON_AVAILABLE}, "
+                f"cuda={[l.w_i8.is_cuda for l in self.layers]})"
+            )
+        use_triton = self.backend == "triton" or (self.backend == "auto" and self._triton_ready())
+        self.last_step_backend = "triton" if use_triton else "torch"
         tot_e, n_e, tot_sat = 0.0, 0, 0.0
         for i, layer in enumerate(self.layers):
             g = _get_grad_w(layer)
             if g is None:
+                continue
+            if use_triton:
+                if self._step_triton(i, layer, g):
+                    self.stats["fused_steps"] += 1
                 continue
             if self.grad_clip is not None:
                 n = g.norm().item()

@@ -81,6 +81,20 @@ plain Python floats — scalar bookkeeping, zero tensor allocations.
 Measured: strict-int8 0.969 acc vs 0.985 mixed ECO vs 0.992 fp32
 (`examples/i8_demo.py`).
 
+## GPU: fused Triton step (optional)
+
+```bash
+pip install eco-int8-opt[gpu]
+python3 examples/benchmark_triton.py
+```
+
+On CUDA, `EcoInt8SGDM` runs the whole weight/momentum update as **2 fused
+Triton launches** (`ecoint8/triton_kernels.py`): grad quant, momentum, weight
+update, ECO injection and both stochastic roundings happen in registers via
+`tl.rand` — no full-size fp32 temporaries (`rand_like`, `clamp`, `floor`
+outputs are gone). Backend selection: `EcoInt8SGDM(..., backend="auto" |
+"torch" | "triton")`, used backend reported in `opt.last_step_backend`.
+
 ## Measured
 
 - MLP, 150 epochs, cosine decay: fp32 0.992 acc / ECO-int8 0.985 / naive-int8 0.976

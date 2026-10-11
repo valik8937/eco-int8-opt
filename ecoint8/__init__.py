@@ -7,7 +7,7 @@ from .deploy import FbgemmInt8Linear, to_fbgemm
 from .ilayer import I8Linear, I8ReLU, I8Sequential
 from .iopt import I8ECO
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "EcoInt8SGDM",
