@@ -98,7 +98,12 @@ class I8ECO:
             out = w_i8.shape[0]
 
             m_new_rows = []
-            # pass 1: updates + errors (per-row int64); momentum scale derived after
+            # pass 1: updates + errors (per-row int64); momentum scale derived after.
+            # amax/tot accumulate in 0-dim device scalars: one host sync per
+            # layer instead of per row (same math, no per-row serialization).
+            dev = w_i8.device
+            amax_t = torch.zeros((), device=dev)
+            tot_t = torch.zeros((), device=dev)
             rows = []
             for o in range(out):
                 U_num = sw[o]  # real fine unit = sw[o] / 2**F; keep numerator, shift by F
@@ -122,16 +127,15 @@ class I8ECO:
                 eU = thU - (w_new << F)
                 m_new = m_t + ((eU * a_q) >> 16)
                 rows.append((w_new.to(torch.int8), m_new, eU))
-                tot_e += (int(eU.abs().sum().item()) / eU.numel()) * U_num / (1 << F)
-                n_e += 1
+                amax_t = torch.maximum(amax_t, m_new.abs().max() * (sw[o] / (1 << F)))
+                tot_t += eU.abs().sum() * (U_num / (1 << F)) / eU.numel()
 
             # momentum scale from real amax: |m_new| * U_o
-            amax_real = 0.0
-            for (w_new, m_new, _), o in zip(rows, range(out)):
-                a = int(m_new.abs().max().item()) * sw[o] / (1 << F)
-                amax_real = max(amax_real, a)
+            amax_real = float(amax_t.item())
             s_m_new = amax_real / 127.0 if amax_real > 0 else 1.0
             self.s_m[i] = s_m_new
+            tot_e += float(tot_t.item())
+            n_e += out
 
             # pass 2: commit weights (frozen grid untouched) + momentum to int8
             for (w_new, m_new, _), o in zip(rows, range(out)):

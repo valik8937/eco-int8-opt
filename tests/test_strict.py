@@ -68,7 +68,9 @@ def test_layer_matches_fp32():
     ref = x @ ref_w.t()
     got = y8.to(torch.float32) * sy
     rel = (got - ref).abs().mean().item() / ref.abs().mean().item()
-    assert rel < 0.05, f"int8 layer too far from fp32: {rel}"
+    # single-layer error scales with the frozen-grid headroom (coarser grid,
+    # bigger error); what must NOT happen is structural blowup beyond that.
+    assert rel < 0.025 * lin.headroom, f"int8 layer too far from fp32: {rel}"
 
 
 def test_cuda_pad8_branch_is_exact():
@@ -113,3 +115,6 @@ def test_e2e_trains():
     with torch.no_grad():
         acc = (net.forward_i8(x8)[0].argmax(1) == y).float().mean().item()
     assert acc > 0.80, f"strict int8 failed to learn: {acc}"
+    for layer in net.int8_layers():  # regression: weights must not pin into the rails
+        sat = ((layer.w_i8 == 127) | (layer.w_i8 == -127)).float().mean().item()
+        assert sat < 0.05, f"weights saturated at rails: {sat:.3f}"

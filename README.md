@@ -49,9 +49,39 @@ zero tensor allocations.
 
 - MLP, 150 epochs, cosine decay: strict-int8 **0.969** acc vs fp32 0.992
   (`examples/i8_demo.py`).
+- MNIST MLP 784-256-128-10, 5 epochs, cosine decay, stochastic grad
+  rounding: strict-int8 trains to ~99%+ train acc with zero weight
+  saturation (frozen grids ship with 4x headroom by default, see below).
 - State memory: 1 byte/weight + 1 byte/momentum.
 - `examples/quad_toy.py` reproduces the ECO paper's Section 3.4 (naive 1/η blow-up
   vs ECO's finite noise floor).
+
+## Honest costs of strict-int8 (read before benchmarking)
+
+- **Stored state is tiny, peak is not.** Stated bytes/param counts cover
+  stored tensors only. The step is dominated by int32/int64 transients
+  (int32 matmul accumulators, int64 optimizer buffers). On small nets the
+  peak can *exceed* fp16: MNIST MLP, 0.4.4 — 32.1 MB peak vs 22.7 MB for
+  an fp16 baseline. The win is stored state (2 bytes/param vs 16 for
+  fp32 Adam), not peak.
+- **Strict steps are slower than fp16**, not faster: the optimizer is a
+  per-row Python loop (dozens of tiny kernels + host syncs per step),
+  and eager `torch._int_mm` does not hit INT8 tensor cores. Same MNIST
+  run: ~373 s vs ~57 s fp16. Strict buys "zero fp32 anywhere", not speed —
+  the fused Triton backend (`EcoInt8SGDM`, `backend="triton"`) exists for
+  step cost; the strict path has no fused backend.
+- **Frozen grids must cover the trajectory.** `I8Linear` freezes its
+  weight steps and output scale at init/calibration with 4x headroom
+  (`headroom=` param). Without it any task whose weights or activations
+  grow past init magnitudes saturates the ±127 rails and collapses —
+  first the last-layer outputs (logits grow with confidence), then the
+  weights. If you see saturation climbing, you need more headroom (at
+  the cost of resolution), not a bigger lr.
+- **Usage that works:** stochastic grad rounding
+  (`quantize_tensor_dynamic(g, stochastic=True)` — deterministic rounding
+  injects DC drift into the momentum), a decaying lr schedule, and
+  `net.quantize_input(x)` for entry quantization (per-batch amax scales
+  silently break the frozen input grid).
 
 ## API
 

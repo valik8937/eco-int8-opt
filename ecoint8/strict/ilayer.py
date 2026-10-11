@@ -77,13 +77,25 @@ def i8_relu(x_i8: torch.Tensor) -> torch.Tensor:
 
 
 class I8Linear(nn.Module):
-    """Integer-only linear layer: int8 in -> int8 out, int32 accumulate."""
+    """Integer-only linear layer: int8 in -> int8 out, int32 accumulate.
 
-    def __init__(self, in_f: int, out_f: int, bias: bool = True):
+    ``headroom`` (default 4.0): the frozen grids (weight steps ``sw`` and the
+    calibrated output scale ``sy``) cover ``headroom``x the init ranges, so
+    real training — where weights and activations legitimately grow past
+    their init magnitudes — does not slam into the ±127 rails. Without it
+    any task whose solution leaves the init range collapses once outputs
+    saturate (the grids are frozen by ECO design, so they must cover the
+    trajectory, not just the starting point). Costs ~log2(headroom) bits
+    of initial resolution.
+    """
+
+    def __init__(self, in_f: int, out_f: int, bias: bool = True, headroom: float = 4.0):
         super().__init__()
+        assert headroom >= 1.0, "headroom must cover at least the init range"
+        self.headroom = float(headroom)
         w_fp = torch.randn(out_f, in_f) * (2.0 / in_f) ** 0.5
         amax = w_fp.abs().amax(dim=1)
-        sw = (amax / 127.0).clamp_min(1e-8)
+        sw = (amax / 127.0 * self.headroom).clamp_min(1e-8)
         w_i8 = torch.clamp(torch.round(w_fp / sw.unsqueeze(1)), -127, 127).to(torch.int8)
         self.register_buffer("w_i8", w_i8)
         self.sw: list[float] = [float(v) for v in sw]  # plain floats, NOT a tensor
@@ -106,7 +118,7 @@ class I8Linear(nn.Module):
         if self.use_bias:
             acc = acc + self.b_acc  # zeros at this point; real bias set via set_bias_acc
         gain = self.sx * max(self.sw)
-        self.sy = dynamic_scale_from_int(int_amax(acc), gain)
+        self.sy = dynamic_scale_from_int(int_amax(acc), gain) * self.headroom
         ratios = [(self.sx * sw) / self.sy for sw in self.sw]
         return _common_shift_requant(acc, ratios, stochastic=True), self.sy
 
@@ -183,6 +195,20 @@ class I8Sequential(nn.Module):
 
     def int8_layers(self) -> list[I8Linear]:
         return [b for b in self.blocks if isinstance(b, I8Linear)]
+
+    def quantize_input(self, x_fp: torch.Tensor) -> tuple[torch.Tensor, float]:
+        """Quantize a float batch onto the FROZEN entry scale (set by calibrate).
+
+        Per-batch amax quantization looks equivalent but silently breaks the
+        static contract: layer 0 interprets its input with the frozen ``sx``,
+        so any other scale is a per-batch gain error on the whole forward.
+        (On normalized MNIST the amax is bit-constant, which is why the bug
+        hides there and bites elsewhere.)
+        """
+        first = self.int8_layers()[0]
+        assert first.sx is not None, "calibrate first"
+        s = float(first.sx)
+        return torch.clamp(torch.round(x_fp / s), -127, 127).to(torch.int8), s
 
     def calibrate(self, x_i8: torch.Tensor, s_x: float) -> tuple[torch.Tensor, float]:
         """One dynamic pass that freezes every layer's scales. Returns (logits, s)."""
