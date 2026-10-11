@@ -62,13 +62,21 @@ class I8ECO:
         lr: float = 0.5,
         momentum: float = 0.9,
         grad_clip: float | None = 1.0,
+        chunk_rows: int = 64,
     ):
         assert momentum > 0, "ECO requires beta > 0"
         assert 0.0 < lr < 2.0, "lr must fit 16-bit fixed-point (0, 2)"
+        assert chunk_rows >= 1, "chunk_rows must be positive"
         self.layers = list(layers)
         self.lr = float(lr)
         self.beta = float(momentum)
         self.grad_clip = grad_clip
+        # Row chunk size for the step: whole-layer tensor math needs ~14
+        # full-size int64 temporaries at once (~21 MB for a 256x784 layer);
+        # chunking bounds that peak (64 rows -> ~5 MB) at the cost of a few
+        # more kernel launches. Same math, same distribution, only the
+        # stochastic-rounding stream differs from unchunked.
+        self.chunk_rows = int(chunk_rows)
         self.m_i8 = [torch.zeros_like(layer.w_i8) for layer in self.layers]
         self.s_m = [1.0 for _ in self.layers]
         self.step_count = 0
@@ -116,41 +124,61 @@ class I8ECO:
             dev = w_i8.device
             m_i8 = self.m_i8[i]
 
-            # Whole-layer tensor math (no per-row Python loop): per-row ratios
-            # differ only through sw[o], so they share one common shift each.
+            # Whole-layer tensor math in row chunks (see chunk_rows): per-row
+            # ratios differ only through sw[o], so they share one common
+            # shift each; slices of the precomputed columns stay valid.
+            # Pass 1 commits weights and stashes m_new chunks (one full-size
+            # int64 — the only whole-layer transient); pass 2 requants
+            # momentum once s_m_new is known from the row amaxes.
             mults_m, com_m = _col_mults([s_m * (1 << F) / sw_o for sw_o in sw], dev)
             mults_g, com_g = _col_mults([s_g * (1 << F) / sw_o for sw_o in sw], dev)
-            mU = apply_mult_shift(m_i8.to(torch.int64), mults_m, com_m, stochastic=False)
-            gU = apply_mult_shift(g_i8.to(torch.int64), mults_g, com_g, stochastic=False)
-            m_t = (mU * b_q + gU * nb_q) >> 16  # int64, beta in 16-bit fp
-            thU = (w_i8.to(torch.int64) << F) - ((m_t * lr_q) >> 16)
-            # stochastic rounding onto the frozen grid (grid step = 2**F in U)
-            nudge = torch.randint(0, 1 << F, thU.shape, dtype=torch.int64, device=thU.device)
-            w_new = torch.clamp(
-                torch.div(thU + nudge, 1 << F, rounding_mode="floor"), -127, 127
-            )
-            eU = thU - (w_new << F)
-            m_new = m_t + ((eU * a_q) >> 16)
-
-            # two vectorized reductions, one small host transfer each
-            # (row amaxes for the fresh momentum scale, row sums for stats)
-            rowmax = m_new.abs().amax(dim=1).tolist()
-            amax_real = max(r * sw_o / (1 << F) for r, sw_o in zip(rowmax, sw))
+            rowmax_all: list[int] = []
+            rowsum_all: list[int] = []
+            m_chunks: list[torch.Tensor] = []
+            rowlen = g_i8.shape[1]
+            for c in range(0, out, self.chunk_rows):
+                sl = slice(c, min(c + self.chunk_rows, out))
+                mU = apply_mult_shift(
+                    m_i8[sl].to(torch.int64), mults_m[sl], com_m, stochastic=False
+                )
+                gU = apply_mult_shift(
+                    g_i8[sl].to(torch.int64), mults_g[sl], com_g, stochastic=False
+                )
+                m_t = (mU * b_q + gU * nb_q) >> 16  # int64, beta in 16-bit fp
+                thU = (w_i8[sl].to(torch.int64) << F) - ((m_t * lr_q) >> 16)
+                # stochastic rounding onto the frozen grid (grid step = 2**F in U)
+                nudge = torch.randint(
+                    0, 1 << F, thU.shape, dtype=torch.int64, device=thU.device
+                )
+                w_new = torch.clamp(
+                    torch.div(thU + nudge, 1 << F, rounding_mode="floor"), -127, 127
+                )
+                eU = thU - (w_new << F)
+                m_new = m_t + ((eU * a_q) >> 16)
+                rowmax_all.extend(m_new.abs().amax(dim=1).tolist())
+                rowsum_all.extend(eU.abs().sum(dim=1).tolist())
+                w_i8[sl].copy_(w_new.to(torch.int8))
+                m_chunks.append(m_new)
+            # momentum scale from real amax: max_o(max|m_new_o| * U_o)
+            amax_real = max(r * sw_o / (1 << F) for r, sw_o in zip(rowmax_all, sw))
             s_m_new = amax_real / 127.0 if amax_real > 0 else 1.0
             self.s_m[i] = s_m_new
-            rowsum = eU.abs().sum(dim=1).tolist()
-            tot_e += sum(s * sw_o for s, sw_o in zip(rowsum, sw)) / eU.numel() / (1 << F)
+            # stats: mean over rows of mean|e| in real units (same as before:
+            # per-row means summed, divided by the row count in n_e)
+            tot_e += sum(s * sw_o for s, sw_o in zip(rowsum_all, sw)) / rowlen / (1 << F)
             n_e += out
-
-            # commit weights (frozen grid untouched) + momentum back into int8
-            w_i8.copy_(w_new.to(torch.int8))
+            # pass 2: momentum back into int8 (frozen weight grid untouched)
             mults_mm, com_mm = _col_mults(
                 [(sw_o / (1 << F)) / s_m_new if s_m_new > 0 else 0.0 for sw_o in sw],
                 dev,
             )
-            self.m_i8[i].copy_(
-                to_int8_sat(apply_mult_shift(m_new, mults_mm, com_mm, stochastic=True))
-            )
+            for m_new, c in zip(m_chunks, range(0, out, self.chunk_rows)):
+                sl = slice(c, min(c + self.chunk_rows, out))
+                self.m_i8[i][sl].copy_(
+                    to_int8_sat(
+                        apply_mult_shift(m_new, mults_mm[sl], com_mm, stochastic=True)
+                    )
+                )
 
             # bias: integer SGD in the acc domain (no momentum)
             if layer.use_bias:

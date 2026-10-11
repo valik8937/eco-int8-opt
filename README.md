@@ -61,9 +61,11 @@ zero tensor allocations.
 - **Stored state is tiny, peak is not.** Stated bytes/param counts cover
   stored tensors only. The step is dominated by int32/int64 transients
   (int32 matmul accumulators, int64 optimizer buffers). On small nets the
-  peak can *exceed* fp16: MNIST MLP, 0.4.4 — 32.1 MB peak vs 22.7 MB for
-  an fp16 baseline. The win is stored state (2 bytes/param vs 16 for
-  fp32 Adam), not peak.
+  peak can *exceed* fp16: MNIST MLP — 32.1 MB peak vs 22.7 MB for an fp16
+  baseline on 0.4.4, 41.2 MB on 0.4.6 (vectorized whole-layer int64
+  temporaries); 0.4.7 runs the optimizer step in row chunks (`chunk_rows=`,
+  default 64) to bound that peak back down. The win is stored state
+  (2 bytes/param vs 16 for fp32 Adam), not peak.
 - **Strict steps are slower than fp16**, not faster: eager `torch._int_mm`
   does not hit INT8 tensor cores, and the step carries full-size int32/int64
   transients. Same MNIST run on 0.4.4 (per-row optimizer loop): ~373 s vs
