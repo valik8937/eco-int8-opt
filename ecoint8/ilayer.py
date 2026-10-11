@@ -29,6 +29,7 @@ from .fixedpoint import (
     apply_mult_shift,
     dynamic_scale_from_int,
     int_amax,
+    pad_mm_dims,
     quantize_multiplier,
     to_int8_sat,
 )
@@ -36,12 +37,8 @@ from .fixedpoint import (
 __all__ = ["I8Linear", "I8ReLU", "I8Sequential"]
 
 
-def _pad8(n: int) -> int:
-    return (n + 7) // 8 * 8
-
-
 def _int_mm(a8: torch.Tensor, b8: torch.Tensor) -> torch.Tensor:
-    """int8 x int8 -> int32. On CUDA pads dims to multiples of 8 (exact op)."""
+    """int8 x int8 -> int32. On CUDA pads dims (multiple of 8, M > 16); exact op."""
     _check_int(a8, "mm lhs")
     _check_int(b8, "mm rhs")
     a8 = a8.contiguous()
@@ -49,7 +46,7 @@ def _int_mm(a8: torch.Tensor, b8: torch.Tensor) -> torch.Tensor:
     if a8.is_cuda:
         M, K = a8.shape
         N = b8.shape[1]
-        M8, K8, N8 = _pad8(M), _pad8(K), _pad8(N)
+        M8, K8, N8 = pad_mm_dims(M, K, N)
         if (M8, K8, N8) != (M, K, N):
             a8 = torch.nn.functional.pad(a8, (0, K8 - K, 0, M8 - M))
             b8 = torch.nn.functional.pad(b8, (0, N8 - N, 0, K8 - K))

@@ -77,6 +77,20 @@ def int_amax(x: torch.Tensor) -> int:
     return int(x.abs().max().item())
 
 
+def _pad8(n: int) -> int:
+    return (n + 7) // 8 * 8
+
+
+def pad_mm_dims(m: int, k: int, n: int) -> tuple[int, int, int]:
+    """Padded dims for CUDA ``torch._int_mm``.
+
+    Constraints (from CUDA errors): every dim a multiple of 8, and the row
+    count M strictly greater than 16. Zero-padding is bit-exact: padded rows
+    contribute nothing, and the result is sliced back. Device-agnostic math.
+    """
+    return max(32, _pad8(m)), _pad8(k), _pad8(n)
+
+
 def dynamic_scale_from_int(acc_amax: int, real_gain: float) -> float:
     """Output scale (Python float) from an integer amax and a real-valued gain.
 
