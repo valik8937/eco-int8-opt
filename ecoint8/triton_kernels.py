@@ -160,7 +160,7 @@ def triton_eco_step_(
         float(wd), float(lr), float(beta), alpha,
         in_features, n, scratch, int(seed), BLOCK,
     )
-    sm_new_t = scratch[:grid].max().unsqueeze(0) / 127.0  # 0-dim GPU scalar
+    sm_new_t = scratch[:grid].max() / 127.0  # 0-dim GPU scalar, matches sm_t
     eco_fused_kernel[(grid,)](
         w_i8, m_i8, g_fp32, sw_flat, sm_t, sg_t, sm_new_t,
         float(wd), float(lr), float(beta), alpha,
