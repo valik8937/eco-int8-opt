@@ -153,7 +153,7 @@ def triton_eco_step_(
     grid = (n + BLOCK - 1) // BLOCK
     assert grid <= scratch.numel(), f"layer too large for scratch ({n} elems)"
 
-    sg_t = torch.maximum(g_fp32.abs().max(), 1e-12) / 127.0  # 0-dim, no sync
+    sg_t = torch.clamp(g_fp32.abs().max(), min=1e-12) / 127.0  # 0-dim, no sync
     alpha = (1.0 / lr) * (1.0 - 1.0 / beta)
     eco_amax_kernel[(grid,)](
         w_i8, m_i8, g_fp32, sw_flat, sm_t, sg_t,
