@@ -64,12 +64,14 @@ zero tensor allocations.
   peak can *exceed* fp16: MNIST MLP, 0.4.4 — 32.1 MB peak vs 22.7 MB for
   an fp16 baseline. The win is stored state (2 bytes/param vs 16 for
   fp32 Adam), not peak.
-- **Strict steps are slower than fp16**, not faster: the optimizer is a
-  per-row Python loop (dozens of tiny kernels + host syncs per step),
-  and eager `torch._int_mm` does not hit INT8 tensor cores. Same MNIST
-  run: ~373 s vs ~57 s fp16. Strict buys "zero fp32 anywhere", not speed —
-  the fused Triton backend (`EcoInt8SGDM`, `backend="triton"`) exists for
-  step cost; the strict path has no fused backend.
+- **Strict steps are slower than fp16**, not faster: eager `torch._int_mm`
+  does not hit INT8 tensor cores, and the step carries full-size int32/int64
+  transients. Same MNIST run on 0.4.4 (per-row optimizer loop): ~373 s vs
+  ~57 s fp16. 0.4.6 vectorized the optimizer (whole-layer tensor ops, two
+  host syncs per layer) — expect a multiple of that back on GPU, but not
+  fp16 parity. Strict buys "zero fp32 anywhere", not speed — the fused
+  Triton backend (`EcoInt8SGDM`, `backend="triton"`) exists for step cost;
+  the strict path has no fused backend.
 - **Frozen grids must cover the trajectory.** `I8Linear` freezes its
   weight steps and output scale at init/calibration with 4x headroom
   (`headroom=` param). Without it any task whose weights or activations

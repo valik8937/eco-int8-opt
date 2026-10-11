@@ -5,7 +5,9 @@ int64 accumulators. Every real-valued factor (lr, beta, alpha, scale ratios)
 becomes an integer ``(mult, shift)`` pair via ``quantize_multiplier`` —
 scalar Python math only. Stochastic rounding via ``torch.randint``.
 
-One step per weight row ``o`` (``U = sw/2**F``)::
+One step per weight row ``o`` (``U = sw/2**F``), vectorized over rows —
+per-row ratios differ only through ``sw[o]``, so each shares one common
+shift (``_col_mults``) and all tensor math is whole-layer::
 
     mU  = m_int * (s_m / U) + g_int * (s_g / U) * ... (momentum, transient int64)
     thU = (w_int << F) - Q_lr(mU)            # lr as fixed-point
@@ -34,6 +36,21 @@ __all__ = ["I8ECO"]
 FRAC_BITS = 12
 BETA_Q = 1 << 16  # beta in 16-bit fixed-point
 LR_Q = 1 << 16  # lr in 16-bit fixed-point (requires lr < 2)
+
+
+def _col_mults(ratios: list[float], dev: torch.device) -> tuple[torch.Tensor, int]:
+    """Per-row ``(mult, shift)`` pairs sharing one common shift.
+
+    Same math as the scalar ``quantize_multiplier`` path, but the tensor
+    math stays whole-layer: one shared shift (minimum over rows), per-row
+    int32 multipliers shifted down to match, as an ``[out, 1]`` column that
+    broadcasts over ``[out, in]`` in ``apply_mult_shift``. The ratios list
+    is scalar Python math (no kernels, no syncs).
+    """
+    ms = [quantize_multiplier(r) for r in ratios]
+    com = min(s for _, s in ms)
+    mults = torch.tensor([m >> (s - com) for m, s in ms], dtype=torch.int32, device=dev)
+    return mults.unsqueeze(1), com
 
 
 class I8ECO:
@@ -96,68 +113,57 @@ class I8ECO:
             w_i8 = layer.w_i8
             sw = layer.sw
             out = w_i8.shape[0]
-
-            m_new_rows = []
-            # pass 1: updates + errors (per-row int64); momentum scale derived after.
-            # amax/tot accumulate in 0-dim device scalars: one host sync per
-            # layer instead of per row (same math, no per-row serialization).
             dev = w_i8.device
-            amax_t = torch.zeros((), device=dev)
-            tot_t = torch.zeros((), device=dev)
-            rows = []
-            for o in range(out):
-                U_num = sw[o]  # real fine unit = sw[o] / 2**F; keep numerator, shift by F
-                # m, g into fine units U via fixed-point ratios
-                mU = apply_mult_shift(
-                    self.m_i8[i][o].to(torch.int64),
-                    *quantize_multiplier(s_m * (1 << F) / U_num),
-                    stochastic=False,
-                )
-                gU = apply_mult_shift(
-                    g_i8[o].to(torch.int64),
-                    *quantize_multiplier(s_g * (1 << F) / U_num),
-                    stochastic=False,
-                )
-                m_t = (mU * b_q + gU * nb_q) >> 16  # int64, beta in 16-bit fp
-                thU = (w_i8[o].to(torch.int64) << F) - ((m_t * lr_q) >> 16)
-                # stochastic rounding onto the frozen grid (grid step = 2**F in U)
-                nudge = torch.randint(0, 1 << F, thU.shape, dtype=torch.int64, device=thU.device)
-                w_new = torch.div(thU + nudge, 1 << F, rounding_mode="floor")
-                w_new = torch.clamp(w_new, -127, 127)
-                eU = thU - (w_new << F)
-                m_new = m_t + ((eU * a_q) >> 16)
-                rows.append((w_new.to(torch.int8), m_new, eU))
-                amax_t = torch.maximum(amax_t, m_new.abs().max() * (sw[o] / (1 << F)))
-                tot_t += eU.abs().sum() * (U_num / (1 << F)) / eU.numel()
+            m_i8 = self.m_i8[i]
 
-            # momentum scale from real amax: |m_new| * U_o
-            amax_real = float(amax_t.item())
+            # Whole-layer tensor math (no per-row Python loop): per-row ratios
+            # differ only through sw[o], so they share one common shift each.
+            mults_m, com_m = _col_mults([s_m * (1 << F) / sw_o for sw_o in sw], dev)
+            mults_g, com_g = _col_mults([s_g * (1 << F) / sw_o for sw_o in sw], dev)
+            mU = apply_mult_shift(m_i8.to(torch.int64), mults_m, com_m, stochastic=False)
+            gU = apply_mult_shift(g_i8.to(torch.int64), mults_g, com_g, stochastic=False)
+            m_t = (mU * b_q + gU * nb_q) >> 16  # int64, beta in 16-bit fp
+            thU = (w_i8.to(torch.int64) << F) - ((m_t * lr_q) >> 16)
+            # stochastic rounding onto the frozen grid (grid step = 2**F in U)
+            nudge = torch.randint(0, 1 << F, thU.shape, dtype=torch.int64, device=thU.device)
+            w_new = torch.clamp(
+                torch.div(thU + nudge, 1 << F, rounding_mode="floor"), -127, 127
+            )
+            eU = thU - (w_new << F)
+            m_new = m_t + ((eU * a_q) >> 16)
+
+            # two vectorized reductions, one small host transfer each
+            # (row amaxes for the fresh momentum scale, row sums for stats)
+            rowmax = m_new.abs().amax(dim=1).tolist()
+            amax_real = max(r * sw_o / (1 << F) for r, sw_o in zip(rowmax, sw))
             s_m_new = amax_real / 127.0 if amax_real > 0 else 1.0
             self.s_m[i] = s_m_new
-            tot_e += float(tot_t.item())
+            rowsum = eU.abs().sum(dim=1).tolist()
+            tot_e += sum(s * sw_o for s, sw_o in zip(rowsum, sw)) / eU.numel() / (1 << F)
             n_e += out
 
-            # pass 2: commit weights (frozen grid untouched) + momentum to int8
-            for (w_new, m_new, _), o in zip(rows, range(out)):
-                w_i8[o].copy_(w_new)
-                r = (sw[o] / (1 << F)) / s_m_new if s_m_new > 0 else 0.0
-                mq, sq = quantize_multiplier(r)
-                self.m_i8[i][o].copy_(
-                    to_int8_sat(apply_mult_shift(m_new, mq, sq, stochastic=True))
-                )
+            # commit weights (frozen grid untouched) + momentum back into int8
+            w_i8.copy_(w_new.to(torch.int8))
+            mults_mm, com_mm = _col_mults(
+                [(sw_o / (1 << F)) / s_m_new if s_m_new > 0 else 0.0 for sw_o in sw],
+                dev,
+            )
+            self.m_i8[i].copy_(
+                to_int8_sat(apply_mult_shift(m_new, mults_mm, com_mm, stochastic=True))
+            )
 
             # bias: integer SGD in the acc domain (no momentum)
             if layer.use_bias:
                 assert isinstance(layer.sx, float)
-                gb = layer._gb_sum  # int64, gain s_gb
+                gb = layer._gb_sum  # int64 [out], gain s_gb
                 s_gb = float(layer._gb_s)
-                for o in range(out):
-                    r_b = self.lr * s_gb / (layer.sx * sw[o])
-                    mq, sq = quantize_multiplier(r_b)
-                    delta = apply_mult_shift(
-                        gb[o].unsqueeze(0), mq, sq, stochastic=True
-                    ).to(torch.int32)
-                    layer.b_acc[o] -= delta[0]
+                mults_b, com_b = _col_mults(
+                    [self.lr * s_gb / (layer.sx * sw_o) for sw_o in sw], dev
+                )
+                delta = apply_mult_shift(
+                    gb.unsqueeze(1), mults_b, com_b, stochastic=True
+                ).to(torch.int32)
+                layer.b_acc -= delta.squeeze(1)
 
         if n_e:
             self.stats["mean_abs_e"] = tot_e / n_e
