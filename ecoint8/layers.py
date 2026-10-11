@@ -22,9 +22,27 @@ import weakref
 from .quant import quantize_tensor_dynamic, quantize_per_channel, dequantize
 
 
+def _pad8(n: int) -> int:
+    return (n + 7) // 8 * 8
+
+
 def _int_mm(a8: torch.Tensor, b8: torch.Tensor) -> torch.Tensor:
-    """Безпечна обгортка над torch._int_mm. Повертає int32."""
-    return torch._int_mm(a8.contiguous(), b8.contiguous())
+    """Безпечна обгортка над torch._int_mm. Повертає int32.
+
+    На CUDA _int_mm вимагає розміри кратні 8 — добиваємо нулями і обрізаємо
+    результат. На нулях добуток той самий, операція точна.
+    """
+    a8 = a8.contiguous()
+    b8 = b8.contiguous()
+    if a8.is_cuda:
+        M, K = a8.shape
+        N = b8.shape[1]
+        M8, K8, N8 = _pad8(M), _pad8(K), _pad8(N)
+        if (M8, K8, N8) != (M, K, N):
+            a8 = torch.nn.functional.pad(a8, (0, K8 - K, 0, M8 - M))
+            b8 = torch.nn.functional.pad(b8, (0, N8 - N, 0, K8 - K))
+            return torch._int_mm(a8, b8)[:M, :N]
+    return torch._int_mm(a8, b8)
 
 
 class Int8LinearFunc(torch.autograd.Function):

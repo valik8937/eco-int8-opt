@@ -71,6 +71,23 @@ def test_layer_matches_fp32():
     assert rel < 0.05, f"int8 layer too far from fp32: {rel}"
 
 
+def test_cuda_pad8_branch_is_exact():
+    """The CUDA dim%8 pad-and-slice is device-agnostic math: verify on CPU."""
+    import torch.nn.functional as F
+
+    from ecoint8.layers import _pad8
+
+    torch.manual_seed(0)
+    for M, K, N in [(512, 256, 2), (7, 13, 5), (100, 300, 2)]:
+        a = torch.randint(-127, 127, (M, K), dtype=torch.int8)
+        b = torch.randint(-127, 127, (K, N), dtype=torch.int8)
+        ref = torch._int_mm(a, b)
+        M8, K8, N8 = _pad8(M), _pad8(K), _pad8(N)
+        ap = F.pad(a, (0, K8 - K, 0, M8 - M))
+        bp = F.pad(b, (0, N8 - N, 0, K8 - K))
+        assert torch.equal(torch._int_mm(ap, bp)[:M, :N], ref)
+
+
 def test_e2e_trains():
     net = _toy_net()
     X, y = _data()
