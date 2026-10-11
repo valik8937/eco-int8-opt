@@ -183,7 +183,7 @@ class I8ECO:
             # bias: integer SGD in the acc domain (no momentum)
             if layer.use_bias:
                 assert isinstance(layer.sx, float)
-                gb = layer._gb_sum  # int64 [out], gain s_gb
+                gb = layer._gb_sum  # int32 [out], gain s_gb
                 s_gb = float(layer._gb_s)
                 mults_b, com_b = _col_mults(
                     [self.lr * s_gb / (layer.sx * sw_o) for sw_o in sw], dev

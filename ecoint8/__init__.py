@@ -4,7 +4,7 @@ from .eco import EcoSGDM, EcoAdam, EcoInt8SGDM
 from .quant import quantize_symmetric, quantize_tensor_dynamic, quantize_per_channel, dequantize
 from .strict import I8ECO, I8Linear, I8ReLU, I8Sequential
 
-__version__ = "0.4.7"
+__version__ = "0.4.8"
 
 __all__ = [
     "EcoInt8SGDM",

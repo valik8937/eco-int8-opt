@@ -162,8 +162,10 @@ class I8Linear(nn.Module):
         m_dx, sh_dx = quantize_multiplier((s_g * sw_mean) / s_dx)
         dx_i8 = to_int8_sat(apply_mult_shift(dx_acc.to(torch.int64), m_dx, sh_dx, True))
 
-        # dBias: integer column sums of g_i8 (real gain s_g), stays int64
-        self._gb_sum = g_i8.to(torch.int64).sum(dim=0)
+        # dBias: integer column sums of g_i8 (real gain s_g), stays int32
+        # (batch * 127 fits int32 with huge margin; the int64 product lives
+        # inside apply_mult_shift, which upcasts internally).
+        self._gb_sum = g_i8.to(torch.int32).sum(dim=0)
         self._gb_s = float(s_g)
         return dx_i8, s_dx
 
